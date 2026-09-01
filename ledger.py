@@ -60,11 +60,6 @@ class CreditLedger:
 
         with self._transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "INSERT OR IGNORE INTO accounts (account_id, balance_cents)"
-                " VALUES (?, 0)",
-                (account_id,),
-            )
 
             try:
                 conn.execute(
@@ -73,12 +68,17 @@ class CreditLedger:
                     (event_id, account_id, amount_cents),
                 )
             except sqlite3.IntegrityError:
-                balance_cents = conn.execute(
+                row = conn.execute(
                     "SELECT balance_cents FROM accounts WHERE account_id = ?",
                     (account_id,),
-                ).fetchone()[0]
-                return CreditResult(applied=False, balance_cents=balance_cents)
+                ).fetchone()
+                return CreditResult(applied=False, balance_cents=row[0] if row else 0)
 
+            conn.execute(
+                "INSERT OR IGNORE INTO accounts (account_id, balance_cents)"
+                " VALUES (?, 0)",
+                (account_id,),
+            )
             conn.execute(
                 "UPDATE accounts SET balance_cents = balance_cents + ?"
                 " WHERE account_id = ?",
