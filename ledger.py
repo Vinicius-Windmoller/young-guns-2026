@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS applied_events (
-    event_id     TEXT    NOT NULL,
+    event_id     TEXT    PRIMARY KEY,
     account_id   TEXT    NOT NULL,
     amount_cents INTEGER NOT NULL
 );
@@ -37,7 +37,6 @@ class CreditResult:
 class CreditLedger:
     def __init__(self, database_path: str):
         self._database_path = database_path
-        self._processed_event_ids: set[str] = set()
         with self._transaction() as conn:
             conn.executescript(SCHEMA)
 
@@ -56,29 +55,41 @@ class CreditLedger:
         account_id: str,
         amount_cents: int,
     ) -> CreditResult:
-        if event_id in self._processed_event_ids:
-            return CreditResult(applied=False, balance_cents=self.balance(account_id))
+        if not event_id or not account_id or amount_cents <= 0:
+            raise InvalidCreditError
 
         with self._transaction() as conn:
-            conn.execute(
-                "INSERT INTO applied_events (event_id, account_id, amount_cents)"
-                " VALUES (?, ?, ?)",
-                (event_id, account_id, amount_cents),
-            )
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT OR IGNORE INTO accounts (account_id, balance_cents)"
                 " VALUES (?, 0)",
                 (account_id,),
             )
+
+            try:
+                conn.execute(
+                    "INSERT INTO applied_events (event_id, account_id, amount_cents)"
+                    " VALUES (?, ?, ?)",
+                    (event_id, account_id, amount_cents),
+                )
+            except sqlite3.IntegrityError:
+                balance_cents = conn.execute(
+                    "SELECT balance_cents FROM accounts WHERE account_id = ?",
+                    (account_id,),
+                ).fetchone()[0]
+                return CreditResult(applied=False, balance_cents=balance_cents)
+
             conn.execute(
                 "UPDATE accounts SET balance_cents = balance_cents + ?"
                 " WHERE account_id = ?",
                 (amount_cents, account_id),
             )
+            balance_cents = conn.execute(
+                "SELECT balance_cents FROM accounts WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()[0]
 
-        self._processed_event_ids.add(event_id)
-
-        return CreditResult(applied=True, balance_cents=self.balance(account_id))
+        return CreditResult(applied=True, balance_cents=balance_cents)
 
     def balance(self, account_id: str) -> int:
         with self._transaction() as conn:
