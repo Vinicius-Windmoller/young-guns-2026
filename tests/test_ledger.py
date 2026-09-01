@@ -1,4 +1,8 @@
-from ledger import CreditLedger
+import threading
+
+import pytest
+
+from ledger import CreditLedger, InvalidCreditError
 
 
 def test_applies_credit_once(ledger):
@@ -44,3 +48,31 @@ def test_duplicate_event_is_ignored_after_restart(database_path):
 
 def test_unknown_account_has_zero_balance(ledger):
     assert ledger.balance("acc-inexistente") == 0
+
+
+def test_simultaneous_duplicate_event_is_applied_once(ledger):
+    start = threading.Barrier(2)
+    results = []
+
+    def apply_credit():
+        start.wait()
+        results.append(ledger.apply_credit("evt-concurrente", "acc-1", 1000))
+
+    threads = [threading.Thread(target=apply_credit) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sum(result.applied for result in results) == 1
+    assert ledger.balance("acc-1") == 1000
+
+
+def test_invalid_event_can_be_retried_after_correction(ledger):
+    with pytest.raises(InvalidCreditError):
+        ledger.apply_credit("evt-invalido", "acc-1", 0)
+
+    result = ledger.apply_credit("evt-invalido", "acc-1", 1000)
+
+    assert result.applied is True
+    assert result.balance_cents == 1000
